@@ -13,6 +13,7 @@ A quick and dirty TensorFlow Reader Op for Matlab .MAT file parsing support.
 
 1. Build the op with TensorFlow binary or source.
 2. Load and run the op in Python
+
   ```
   import tensorflow as tf
   parse_mat_module = tf.load_op_library('parse_mat.so')
