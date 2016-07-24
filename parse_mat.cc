@@ -1,6 +1,10 @@
+// tf-mat-parser
+// A quick TensorFlow Reader Op for Matlab .MAT file parsing support.
+// Author: Z Kwan (frkwanz@gmail.com)
+
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "../public/tensor_c_api.h"
+#include <vector>
 #include <matio.h>
 
 using namespace tensorflow;
@@ -8,14 +12,14 @@ using namespace tensorflow;
 REGISTER_OP("ParseMat")
     .Input("mat_path: string")
     .Input("var: string")
-    .Output("output: out_type")
-    .Attr("out_type: {float,double,uint8,int8,uint16,int16,int32,int64}");
+    .Output("output: dtype")
+    .Attr("dtype: {float,double,uint8,int8,uint16,int16,int32,int64}");
 
 template<typename T>
 class ParseMatOp : public OpKernel {
 public:
     explicit ParseMatOp(OpKernelConstruction* context) : OpKernel(context) {
-        OP_REQUIRES_OK(context, context->GetAttr("out_type", &out_type_));
+        OP_REQUIRES_OK(context, context->GetAttr("dtype", &dtype_));
     }
 
     void Compute(OpKernelContext* context) override {
@@ -29,9 +33,11 @@ public:
         mat_t *matfp = NULL;
         matvar_t *matvar = NULL;
         matfp = Mat_Open(mat_path_ch, MAT_ACC_RDONLY);
-        OP_REQUIRES(context, matfp, errors::NotFound("Failed to open mat file: ", mat_path_ch));
+        OP_REQUIRES(context, matfp, errors::NotFound("Failed to open mat file: ",
+                                                        mat_path_ch));
         matvar = Mat_VarRead(matfp, var_ch);
-        OP_REQUIRES(context, matvar, errors::InvalidArgument("Matrix not found in mat file: ", var_ch));
+        OP_REQUIRES(context, matvar,
+                    errors::InvalidArgument("Matrix not found in mat file: ", var_ch));
         OP_REQUIRES(context,
                     matvar->class_type == MAT_C_DOUBLE ||
                     matvar->class_type == MAT_C_SINGLE ||
@@ -48,7 +54,7 @@ public:
                     matvar->nbytes % sizeof(T) == 0,
                     errors::InvalidArgument("Matrix has ", matvar->nbytes, " bytes, ",
                                             " not a multiple of ", sizeof(T),
-                                            ", the size of ", DataTypeString(out_type_)));
+                                            ", the size of ", DataTypeString(dtype_)));
 
         Tensor* output_tensor = NULL;
         TensorShape output_shape = TensorShape();
@@ -59,9 +65,9 @@ public:
         OP_REQUIRES_OK(context,
                        context->allocate_output(0, output_shape, &output_tensor));
         auto output = output_tensor->flat<T>();
-        for (int i = 0; i < output_shape.num_elements(); i++)
-            output(i) = *((T*)matvar->data + i);
-        // TODO: flip storage order
+        for (int64 i = 0; i < output_shape.num_elements(); i++)
+            output(i) = *((T*)matvar->data +
+                            _get_index_with_flipped_dims(output_shape, i));
 
         Mat_VarFree(matvar);
         Mat_Close(matfp);
@@ -71,12 +77,28 @@ public:
     }
 
 private:
-    DataType out_type_;
+    DataType dtype_;
+    inline int64 _get_index_with_flipped_dims(const TensorShape& shape, int64 index) {
+        int dims = shape.dims();
+        std::vector<int64> indices(dims);
+        for (int i = 0; i < dims - 1; i++) {
+            indices[i] = index % shape.dim_size(dims - i - 1);
+            index /= shape.dim_size(dims - i - 1);
+        }
+        indices[dims - 1] = index;
+
+        int64 index_flipped = indices[0];
+        for (int i = 1; i < dims; i++) {
+            index_flipped *= shape.dim_size(dims - i - 1);
+            index_flipped += indices[i];
+        }
+        return index_flipped;
+    }
 };
 
-#define REGISTER_PARSE_MAT(type)                                            \
-  REGISTER_KERNEL_BUILDER(                                                  \
-      Name("ParseMat").Device(DEVICE_CPU).TypeConstraint<type>("out_type"), \
+#define REGISTER_PARSE_MAT(type)                                         \
+  REGISTER_KERNEL_BUILDER(                                               \
+      Name("ParseMat").Device(DEVICE_CPU).TypeConstraint<type>("dtype"), \
       ParseMatOp<type>)
 
 REGISTER_PARSE_MAT(float);
